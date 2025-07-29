@@ -7,6 +7,8 @@ const personalizationService = require('../services/personalizationService');
 const User = require('../models/User');
 const Memory = require('../models/Memory');
 
+// ... (getSessions, getSessionDetails, createSession, saveChatHistory, handleStandardMessage, handleDeepSearch, deleteSession, summarizeConversation remain the same) ...
+
 /**
  * @desc    Get all chat sessions for the authenticated user
  * @route   GET /api/chat/sessions
@@ -190,16 +192,18 @@ const deleteSession = async (req, res) => {
  */
 const handleHybridRagMessage = async (req, res) => {
     try {
-        // Removed fileId from destructuring, as it's no longer mandatory
-        const { query, allowDeepSearch } = req.body;
+        // --- MODIFICATION: Accept fileId from the request body ---
+        const { query, fileId } = req.body;
         const userId = req.user.id;
 
         if (!query) {
             return res.status(400).json({ message: 'Query is required.' });
         }
 
-        // Pass undefined for fileId to processQuery, so it knows to search all files for the user.
-        const result = await HybridRagService.processQuery(query, userId, undefined, allowDeepSearch); 
+        // --- MODIFICATION: Pass the fileId to the service ---
+        // If fileId is null/undefined, it will search all user files.
+        // If fileId is provided, it will search only that specific file.
+        const result = await HybridRagService.processQuery(query, userId, fileId); 
         res.status(200).json(result);
 
     } catch (error) {

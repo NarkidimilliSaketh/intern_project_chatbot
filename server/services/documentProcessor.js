@@ -1,9 +1,10 @@
+// server/services/documentProcessor.js
+
 const fs = require('fs');
 const path = require('path');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 
-// Define a maximum number of pages for PDFs to prevent memory overload
 const MAX_PDF_PAGES = 20; 
 
 class DocumentProcessor {
@@ -17,25 +18,21 @@ class DocumentProcessor {
     }
 
     async parseFile(filePath) {
+        // ... (this function remains the same)
         const ext = path.extname(filePath).toLowerCase();
         try {
             let text = '';
             switch (ext) {
                 case '.txt':
-                    // For text files, we still read them, but large files are the issue.
-                    // The memory increase in package.json handles typical text files.
                     text = fs.readFileSync(filePath, 'utf-8');
                     break;
                 case '.pdf':
                     console.log(`📄 Parsing PDF: ${path.basename(filePath)}`);
                     const dataBuffer = fs.readFileSync(filePath);
-                    // --- FIX: Only process the first N pages of large PDFs ---
-                    const options = {
-                        max: MAX_PDF_PAGES
-                    };
+                    const options = { max: MAX_PDF_PAGES };
                     const data = await pdf(dataBuffer, options);
                     text = data.text;
-                    console.log(`✅ Parsed first ${data.numpages} pages of PDF.`);
+                    console.log(`✅ Parsed first ${data.numpages > 0 ? data.numpages : 'many'} pages of PDF.`);
                     break;
                 case '.docx':
                     const result = await mammoth.extractRawText({ path: filePath });
@@ -52,6 +49,7 @@ class DocumentProcessor {
         }
     }
 
+    // --- MODIFICATION: Add filename context to each chunk ---
     chunkText(text, filename) {
         if (typeof text !== 'string' || !text.trim()) {
             return [];
@@ -63,27 +61,29 @@ class DocumentProcessor {
 
         while (startIndex < text.length) {
             const endIndex = Math.min(startIndex + this.chunkSize, text.length);
-            let chunkText = text.slice(startIndex, endIndex);
+            let chunkTextSlice = text.slice(startIndex, endIndex);
 
             if (endIndex < text.length) {
-                const lastSpace = chunkText.lastIndexOf(' ');
+                const lastSpace = chunkTextSlice.lastIndexOf(' ');
                 if (lastSpace > 0) {
-                    chunkText = chunkText.substring(0, lastSpace);
+                    chunkTextSlice = chunkTextSlice.substring(0, lastSpace);
                 }
             }
             
-            // Langchain's MemoryVectorStore expects Document objects with pageContent and metadata
+            // Prepend the document title to each chunk for better context
+            const chunkWithContext = `Source Document: "${filename}"\n\nContent: ${chunkTextSlice.trim()}`;
+
             chunks.push({
-                pageContent: chunkText.trim(),
+                pageContent: chunkWithContext, // Use the content with the title
                 metadata: {
                     source: filename,
                     chunkId: `${filename}_chunk_${chunkIndex}`
                 }
             });
 
-            const actualEndIndex = startIndex + chunkText.length;
+            const actualEndIndex = startIndex + chunkTextSlice.length;
             startIndex = actualEndIndex - this.chunkOverlap;
-            if (startIndex <= actualEndIndex - chunkText.length) {
+            if (startIndex <= actualEndIndex - chunkTextSlice.length) {
                 startIndex = actualEndIndex;
             }
             chunkIndex++;
@@ -107,12 +107,18 @@ class DocumentProcessor {
                 return { success: true, chunksAdded: 0, message: 'File had no content to chunk.' };
             }
 
-            chunks.forEach(chunk => {
-                chunk.metadata.userId = options.userId;
-                chunk.metadata.fileId = options.fileId; 
-            });
+            // Add user and file ID to metadata for filtering
+            const documentsToStore = chunks.map(chunk => ({
+                pageContent: chunk.pageContent,
+                metadata: {
+                    ...chunk.metadata,
+                    userId: options.userId,
+                    fileId: options.fileId,
+                    fileName: options.originalName // Explicitly add fileName
+                }
+            }));
 
-            const result = await this.vectorStore.addDocuments(chunks);
+            const result = await this.vectorStore.addDocuments(documentsToStore);
             return { success: true, chunksAdded: result.count };
             
         } catch (error) {

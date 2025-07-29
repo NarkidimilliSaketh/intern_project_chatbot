@@ -3,7 +3,6 @@
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 const { handleGeminiError } = require('../utils/errorUtils');
 
-// ... (MODEL_NAME, baseGenerationConfig, baseSafetySettings remain the same) ...
 const MODEL_NAME = "gemini-1.5-flash";
 
 const baseGenerationConfig = {
@@ -18,13 +17,11 @@ const baseSafetySettings = [
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
 ];
 
-
 class GeminiAI {
-    // ... (constructor, initialize, isEnabled, _configureModel, _processApiResponse remain the same) ...
     constructor() {
         this.genAI = null;
         this.model = null;
-        this.initialize(); // Initialize on creation
+        this.initialize();
     }
 
     initialize() {
@@ -74,18 +71,12 @@ class GeminiAI {
         throw new Error(blockMessage || "Received an empty or invalid response from the AI service.");
     }
 
-    /**
-     * --- MODIFIED: Build system prompt with all available context, including memory change announcements ---
-     */
     buildSystemPrompt(systemPrompt, context, personalizationProfile = '', conversationSummary = '', userMemories = [], memoryChanges = {}) {
         let finalSystemPrompt = systemPrompt || 'You are a helpful AI assistant providing accurate and concise answers.';
         
         if (userMemories && userMemories.length > 0) {
             const memoryContext = userMemories.map(mem => `- ${mem.content}`).join('\n');
-            // --- MODIFIED: More explicit instructions on how to use memory ---
-            finalSystemPrompt += `\n\n## FACTS ABOUT THE USER (Your Long-Term Memory):
-These are established facts about the user you are talking to. Use them to personalize your responses. Refer to the user as "you".
-${memoryContext}`;
+            finalSystemPrompt += `\n\n## FACTS ABOUT THE USER (Your Long-Term Memory):\nThese are established facts about the user you are talking to. Use them to personalize your responses. Refer to the user as "you".\n${memoryContext}`;
         }
 
         if (personalizationProfile) {
@@ -100,12 +91,8 @@ ${memoryContext}`;
             finalSystemPrompt += `\n\n## Relevant Context from Documents:\n${context}`;
         }
 
-        // --- NEW: Instructions for announcing memory changes ---
         if (memoryChanges && (memoryChanges.added?.length > 0 || memoryChanges.updated?.length > 0)) {
-            finalSystemPrompt += `\n\n## MEMORY UPDATE NOTIFICATION:
-You have just updated your memory based on the latest conversation. Briefly and naturally mention one of these updates in your response. For example: "Got it, I'll remember that." or "Okay, I've updated my notes on your project."
-- Added: ${JSON.stringify(memoryChanges.add || [])}
-- Updated: ${JSON.stringify(memoryChanges.update || [])}`;
+            finalSystemPrompt += `\n\n## MEMORY UPDATE NOTIFICATION:\nYou have just updated your memory based on the latest conversation. Briefly and naturally mention one of these updates in your response. For example: "Got it, I'll remember that." or "Okay, I've updated my notes on your project."\n- Added: ${JSON.stringify(memoryChanges.add || [])}\n- Updated: ${JSON.stringify(memoryChanges.update || [])}`;
         }
         
         return finalSystemPrompt;
@@ -134,10 +121,59 @@ You have just updated your memory based on the latest conversation. Briefly and 
             throw handleGeminiError(error);
         }
     }
+
+    // --- NEW: Method to determine user intent ---
+    async determineQueryType(query) {
+        if (!this.isEnabled()) return { type: 'specific', reason: 'AI disabled' };
+        try {
+            const prompt = `
+Analyze the user's query and classify its intent. Choose one of two types:
+1.  "specific": The user is asking a direct question about a fact, concept, or detail that can likely be found in a specific part of a document. Examples: "What is the database schema?", "How does the authentication work?", "List the main components."
+2.  "broad": The user is asking for a general summary, explanation, or overview of the entire document. Examples: "explain this document", "summarize this", "what is this about?", "give me the key points".
+
+User Query: "${query}"
+
+Respond with ONLY a valid JSON object in the format: {"type": "specific" | "broad", "reason": "A brief explanation for your choice."}.
+`;
+            const result = await this.model.generateContent(prompt);
+            const text = this._processApiResponse(result.response);
+            const jsonMatch = text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
+            }
+            return { type: 'specific', reason: 'Could not parse AI response for query type.' };
+        } catch (error) {
+            console.error("Error determining query type:", error);
+            return { type: 'specific', reason: 'Error during analysis.' };
+        }
+    }
+
+    // --- NEW: Method to summarize a large block of text ---
+    async summarizeDocumentContent(content, query) {
+        if (!this.isEnabled()) return "AI service is unavailable.";
+        try {
+            const prompt = `
+You are an expert summarizer. Based on the full document content provided below, generate a comprehensive answer to the user's original query.
+
+Original Query: "${query}"
+
+Document Content:
+---
+${content.substring(0, 10000)}
+---
+
+Provide a detailed and well-structured summary that directly addresses the user's request. Use markdown for formatting.
+`;
+            const result = await this.model.generateContent(prompt);
+            return this._processApiResponse(result.response);
+        } catch (error) {
+            console.error("Error in summarizeDocumentContent:", error);
+            throw handleGeminiError(error);
+        }
+    }
     
-    // ... (rest of the file remains the same) ...
     buildRagPrompt(query, context, personalizationProfile = '') {
-        let finalPrompt = `You are an expert assistant. Answer the user's question based ONLY on the following context. If the answer is not in the context, say "I could not find an answer in the provided documents."`;
+        let finalPrompt = `You are an expert assistant. Answer the user's question based ONLY on the following context. If the answer is not in the context, state that the information is not available in the provided text. Do not use outside knowledge.`;
         if (personalizationProfile) {
             finalPrompt += `\n\nTailor your response to this user's profile: ${personalizationProfile}`;
         }
@@ -164,7 +200,7 @@ You have just updated your memory based on the latest conversation. Briefly and 
             return 'No relevant document context available.';
         }
         return documentChunks
-            .map(chunk => `Document: ${chunk.metadata?.source || 'Unknown'}\n${chunk.content}`)
+            .map(chunk => `Document: ${chunk.metadata?.fileName || 'Unknown'}\n${chunk.content}`)
             .join('\n\n');
     }
 }

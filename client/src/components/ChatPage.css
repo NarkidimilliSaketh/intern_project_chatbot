@@ -197,6 +197,71 @@ body, html {
     height: 40px;
     font-size: 1.2rem;
 }
+
+
+/* client/src/components/ChatPage.css */
+
+/* ... (all existing styles) ... */
+
+/* === NEW: Active RAG Indicator Styles === */
+.active-rag-indicator {
+    max-width: 800px;
+    margin: 0 auto 8px auto;
+    padding: 6px 12px;
+    background-color: rgba(138, 180, 248, 0.15); /* Light blue background */
+    border: 1px solid rgba(138, 180, 248, 0.3);
+    border-radius: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--secondary-text-color);
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+.active-rag-indicator span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.active-rag-indicator strong {
+    color: var(--primary-text-color);
+    margin: 0 4px;
+}
+
+.active-rag-indicator button {
+    background: none;
+    border: none;
+    color: var(--secondary-text-color);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 8px;
+    transition: background-color 0.2s;
+}
+
+.active-rag-indicator button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+} 
+
+
+.rag-source-info {
+    max-width: 800px;
+    margin: 0 auto 8px auto;
+    padding: 6px 12px;
+    background-color: rgba(82, 196, 26, 0.15); /* Light green background */
+    border: 1px solid rgba(82, 196, 26, 0.3);
+    border-radius: 16px;
+    font-size: 0.85rem;
+    color: var(--secondary-text-color);
+    text-align: center;
+    animation: fadeIn 0.3s ease-in-out;
+}
+
 .message-bubble-container { display: flex; flex-direction: column; width: 100%; gap: 8px; }
 .message-bubble { line-height: 1.7; font-size: 1rem; color: var(--primary-text-color); }
 .tts-button { background: none; border: none; color: var(--secondary-text-color); cursor: pointer; padding: 4px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: background-color 0.2s; }

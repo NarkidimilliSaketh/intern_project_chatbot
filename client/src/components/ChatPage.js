@@ -1,3 +1,4 @@
+// client/src/components/ChatPage.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -8,7 +9,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { v4 as uuidv4 } from 'uuid';
-import { FaBars, FaPaperPlane, FaMicrophone, FaHistory, FaPlus, FaCog, FaFolderOpen, FaSignOutAlt } from 'react-icons/fa';
+import { FaBars, FaPaperPlane, FaMicrophone, FaHistory, FaPlus, FaCog, FaFolderOpen, FaSignOutAlt, FaTimes } from 'react-icons/fa';
 import { Popover, Typography, Button, Box, IconButton as MuiIconButton } from '@mui/material';
 
 import FileUploadWidget from './FileUploadWidget';
@@ -32,7 +33,6 @@ const GeminiIcon = () => (
     </svg>
 );
 
-
 const ChatPage = ({ setIsAuthenticated }) => {
     const [isSidebarExpanded, setIsSidebarExpanded] = useState(window.innerWidth > 1024);
     const [sidebarView, setSidebarView] = useState('files');
@@ -50,14 +50,12 @@ const ChatPage = ({ setIsAuthenticated }) => {
     const [editableSystemPromptText, setEditableSystemPromptText] = useState(() => getPromptTextById('friendly'));
     const [files, setFiles] = useState([]);
     const [fileError, setFileError] = useState('');
-    const [isRagEnabled, setIsRagEnabled] = useState(false);
-    const [allowRagDeepSearch, setAllowRagDeepSearch] = useState(true);
+    const [activeFileForRag, setActiveFileForRag] = useState(null); // Tracks { id, name } of the active file
     const [isDeepSearchEnabled, setIsDeepSearchEnabled] = useState(false);
-    // Removed activeFileForRag state (from previous change)
     const [currentlySpeakingIndex, setCurrentlySpeakingIndex] = useState(null);
     const [conversationSummary, setConversationSummary] = useState('');
+    const [ragSourceInfo, setRagSourceInfo] = useState(null); // Feedback for RAG responses
     const summaryTriggerCount = useRef(0);
-
 
     const messagesEndRef = useRef(null);
     const recognitionRef = useRef(null);
@@ -96,7 +94,6 @@ const ChatPage = ({ setIsAuthenticated }) => {
         }
     }, [messages]);
 
-
     const saveAndReset = useCallback(async (isLoggingOut = false, onCompleteCallback = null) => {
         const currentSessionId = localStorage.getItem('sessionId');
         const currentUserId = localStorage.getItem('userId');
@@ -113,9 +110,10 @@ const ChatPage = ({ setIsAuthenticated }) => {
         } finally {
             if (!isLoggingOut) {
                 setMessages([]);
-                // --- FIX: Reset summary state on new chat ---
                 setConversationSummary('');
                 summaryTriggerCount.current = 0;
+                setActiveFileForRag(null);
+                setRagSourceInfo(null);
                 const newSessionId = uuidv4();
                 setSessionId(newSessionId);
                 localStorage.setItem('sessionId', newSessionId);
@@ -189,7 +187,6 @@ const ChatPage = ({ setIsAuthenticated }) => {
         if (userId) fetchFiles();
     }, [userId, fetchFiles]);
 
-
     const handleNewChat = useCallback(() => {
         if (!isProcessing) {
             saveAndReset(false, () => {
@@ -208,6 +205,7 @@ const ChatPage = ({ setIsAuthenticated }) => {
         setMessages(prev => [...prev, newUserMessage]);
         setInputText('');
         setError('');
+        setRagSourceInfo(null); // Clear previous source info
 
         const historyToSend = [...messages, newUserMessage];
         
@@ -227,12 +225,12 @@ const ChatPage = ({ setIsAuthenticated }) => {
             } finally {
                 setLoadingStates(prev => ({ ...prev, deepSearch: false }));
             }
-        } else if (isRagEnabled) {
+        } else if (activeFileForRag) {
             setLoadingStates(prev => ({ ...prev, chat: true }));
             try {
-                // Modified payload: no fileId
                 const ragPayload = {
-                    query: trimmedInput, allowDeepSearch: allowRagDeepSearch
+                    query: trimmedInput,
+                    fileId: activeFileForRag.id
                 };
                 const response = await queryHybridRagService(ragPayload);
                 const assistantMessage = {
@@ -241,6 +239,14 @@ const ChatPage = ({ setIsAuthenticated }) => {
                     timestamp: new Date(), metadata: response.data.metadata
                 };
                 setMessages(prev => [...prev, assistantMessage]);
+                
+                if (response.data.metadata.searchType === 'rag') {
+                    const count = response.data.metadata.source_count || 0;
+                    setRagSourceInfo(`Answered from ${count} relevant section(s) in "${activeFileForRag.name}".`);
+                } else if (response.data.metadata.searchType === 'summary') {
+                    setRagSourceInfo(`Generated a summary from the entire document: "${activeFileForRag.name}".`);
+                }
+
             } catch (err) {
                 setError(`RAG Error: ${err.response?.data?.message || 'RAG query failed.'}`);
                 setMessages(prev => prev.slice(0, -1));
@@ -255,7 +261,7 @@ const ChatPage = ({ setIsAuthenticated }) => {
                     history: historyToSend,
                     sessionId,
                     systemPrompt: editableSystemPromptText,
-                    conversationSummary // Include conversation summary
+                    conversationSummary
                 };
                 const response = await apiSendMessage(payload);
                 const assistantMessage = {
@@ -271,8 +277,7 @@ const ChatPage = ({ setIsAuthenticated }) => {
         }
     }, [
         inputText, isProcessing, loadingStates.listening, messages, isDeepSearchEnabled,
-        isRagEnabled, allowRagDeepSearch, sessionId, editableSystemPromptText,
-        conversationSummary // Added to dependencies
+        activeFileForRag, sessionId, editableSystemPromptText, conversationSummary
     ]);
     
     const handleEnterKey = useCallback((e) => {
@@ -301,9 +306,10 @@ const ChatPage = ({ setIsAuthenticated }) => {
                 setCurrentSystemPromptId(availablePrompts.find(p => p.prompt === sessionData.systemPrompt)?.id || 'custom');
                 setSessionId(sessionData.sessionId);
                 localStorage.setItem('sessionId', sessionData.sessionId);
-                // --- FIX: Reset summary state when loading a session ---
                 setConversationSummary('');
                 summaryTriggerCount.current = 0;
+                setActiveFileForRag(null);
+                setRagSourceInfo(null);
                 setSidebarView('files');
                 handleSidebarAction();
             }
@@ -337,6 +343,10 @@ const ChatPage = ({ setIsAuthenticated }) => {
             try {
                 await deleteUserFile(fileId);
                 fetchFiles();
+                if (activeFileForRag?.id === fileId) {
+                    setActiveFileForRag(null);
+                    setRagSourceInfo(null);
+                }
             } catch (err) {
                 setFileError(`Could not delete ${fileName}.`);
             }
@@ -349,6 +359,9 @@ const ChatPage = ({ setIsAuthenticated }) => {
             try {
                 await renameUserFile(fileId, newName);
                 fetchFiles();
+                if (activeFileForRag?.id === fileId) {
+                    setActiveFileForRag(prev => ({ ...prev, name: newName }));
+                }
             } catch (err) {
                 setFileError(`Could not rename file.`);
             }
@@ -356,12 +369,11 @@ const ChatPage = ({ setIsAuthenticated }) => {
     };
     
     const handleChatWithFile = useCallback((fileId, fileName) => {
-        // No longer setting specific file for RAG, just enabling RAG mode
-        setIsRagEnabled(true);
+        setActiveFileForRag({ id: fileId, name: fileName });
         setIsDeepSearchEnabled(false);
         setMessages(prev => [...prev, {
             role: 'system',
-            parts: [{ text: `RAG mode enabled. I will now search all your uploaded files to answer your questions.` }],
+            parts: [{ text: `Switched to RAG mode. Now chatting with "${fileName}".` }],
             timestamp: new Date()
         }]);
     }, []);
@@ -597,21 +609,34 @@ const ChatPage = ({ setIsAuthenticated }) => {
     
                 <footer className="chat-footer">
                     <div className="input-area-container">
+                        {ragSourceInfo && (
+                            <div className="rag-source-info">
+                                <span>{ragSourceInfo}</span>
+                            </div>
+                        )}
+                        {activeFileForRag && !ragSourceInfo && (
+                            <div className="active-rag-indicator">
+                                <span>Chatting with: <strong>{activeFileForRag.name}</strong></span>
+                                <button onClick={() => setActiveFileForRag(null)} title="Stop chatting with this file">
+                                    <FaTimes />
+                                </button>
+                            </div>
+                        )}
                         <form className="modern-input-bar" onSubmit={handleSendMessage}>
                             <button
                                 type="button"
                                 className={`input-action-btn ${isDeepSearchEnabled ? 'active' : ''}`}
                                 title="Deep Research"
-                                onClick={() => { setIsDeepSearchEnabled(v => !v); setIsRagEnabled(false); }}
+                                onClick={() => { setIsDeepSearchEnabled(v => !v); setActiveFileForRag(null); }}
                                 disabled={isProcessing}
                             >
                                 DS
                             </button>
                             <button
                                 type="button"
-                                className={`input-action-btn ${isRagEnabled ? 'active' : ''}`}
-                                title="Chat with your documents"
-                                onClick={() => { setIsRagEnabled(v => !v); setIsDeepSearchEnabled(false); }}
+                                className={`input-action-btn ${activeFileForRag ? 'active' : ''}`}
+                                title={activeFileForRag ? "Deactivate RAG mode" : "Select a file to enable RAG"}
+                                onClick={() => setActiveFileForRag(null)}
                                 disabled={isProcessing || !files.length}
                             >
                                 RAG
@@ -620,7 +645,7 @@ const ChatPage = ({ setIsAuthenticated }) => {
                                 value={inputText}
                                 onChange={e => setInputText(e.target.value)}
                                 onKeyDown={handleEnterKey}
-                                placeholder="Enter a prompt here"
+                                placeholder={activeFileForRag ? `Ask about ${activeFileForRag.name}...` : "Enter a prompt here"}
                                 className="modern-input"
                                 disabled={isProcessing}
                                 rows="1"

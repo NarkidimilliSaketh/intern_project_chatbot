@@ -1,15 +1,136 @@
+// server/services/HybridRagService.js
 const serviceManager = require('./serviceManager');
-const File = require('../models/File');
-const User = require('../models/User'); // Import User model
-
-// Removed loadedFilesCache and ensureFileIsLoaded as they are specific to per-file RAG.
-// For "RAG on all files", we assume all user files are already indexed or can be efficiently retrieved by the vector store.
-// If you have a large number of files and want to ensure they are loaded,
-// you might reintroduce a more generalized pre-loading or lazy-loading mechanism.
+const User = require('../models/User');
+const File = require('../models/File'); // Import the File model
+const DocumentProcessor = require('./documentProcessor'); // Import DocumentProcessor
 
 const RAG_CONFIDENCE_THRESHOLD = 0.65;
 
 class HybridRagService {
+    // --- NEW: Query Router ---
+    async processQuery(query, userId, fileId = null) {
+        const { geminiAI } = serviceManager.getServices();
+        
+        // Step 1: Determine the user's intent
+        const queryAnalysis = await geminiAI.determineQueryType(query);
+        console.log(`[RAG Router] Query classified as: ${queryAnalysis.type}. Reason: ${queryAnalysis.reason}`);
+
+        // Step 2: Route to the appropriate handler
+        if (queryAnalysis.type === 'broad') {
+            return this._handleBroadQuery(query, userId, fileId);
+        } else {
+            return this._handleSpecificQuery(query, userId, fileId);
+        }
+    }
+
+    // --- NEW: Handler for broad queries like "summarize this" ---
+    async _handleBroadQuery(query, userId, fileId) {
+        console.log('[RAG Service] Handling broad query with summarization strategy.');
+        const { geminiAI, documentProcessor } = serviceManager.getServices();
+
+        if (!fileId) {
+            return {
+                message: "To get a summary, please first select a specific file to chat with from the 'My Files' menu.",
+                metadata: { searchType: 'summary_requires_file', sources: [] }
+            };
+        }
+
+        try {
+            const file = await File.findOne({ _id: fileId, user: userId });
+            if (!file) {
+                throw new Error('File not found for summarization.');
+            }
+
+            // Use the document processor to get the full text content
+            const fileContent = await documentProcessor.parseFile(file.path);
+
+            if (!fileContent || fileContent.trim().length < 100) {
+                 return {
+                    message: "The selected document doesn't have enough content to generate a summary.",
+                    metadata: { searchType: 'summary_insufficient_content', sources: [{ title: file.originalname, type: 'document' }] }
+                };
+            }
+
+            const summary = await geminiAI.summarizeDocumentContent(fileContent, query);
+
+            return {
+                message: summary,
+                metadata: {
+                    searchType: 'summary',
+                    sources: [{ title: file.originalname, type: 'document' }]
+                }
+            };
+        } catch (error) {
+            console.error('Error in _handleBroadQuery:', error);
+            return {
+                message: "I encountered an error while trying to summarize the document. Please try again.",
+                metadata: { searchType: 'summary_error', sources: [] }
+            };
+        }
+    }
+
+    // --- REFACTORED: The original logic is now the specific query handler ---
+    async _handleSpecificQuery(query, userId, fileId = null) {
+        console.log('[RAG Service] Handling specific query with vector search strategy.');
+        const { vectorStore, geminiAI } = serviceManager.getServices();
+
+        const correctedQuery = await this.correctAndClarifyQuery(query);
+
+        const filters = { userId };
+        if (fileId) {
+            filters.fileId = fileId;
+            console.log(`[RAG Service] Scoping search to fileId: ${fileId}`);
+        } else {
+            console.log(`[RAG Service] Searching across all documents for user: ${userId}`);
+        }
+
+        const relevantChunks = await vectorStore.searchDocuments(correctedQuery, {
+            limit: 5,
+            filters: filters
+        });
+
+        console.log(`[RAG Service] Found ${relevantChunks.length} relevant chunks.`);
+        if (relevantChunks.length > 0) {
+            console.log('Top chunks and scores:');
+            relevantChunks.forEach((chunk, i) => {
+                console.log(`  ${i + 1}. Score: ${chunk.score.toFixed(4)} | Content: "${chunk.content.substring(0, 80)}..."`);
+            });
+        }
+
+        const isContextSufficient = relevantChunks.length > 0 && relevantChunks[0].score > RAG_CONFIDENCE_THRESHOLD;
+
+        if (isContextSufficient) {
+            console.log(`[RAG Service] Context sufficient (top score: ${relevantChunks[0].score.toFixed(4)}). Answering from document(s).`);
+            const context = relevantChunks.map(chunk => chunk.content).join('\n\n');
+            
+            const user = await User.findById(userId);
+            const personalizationProfile = user ? user.personalizationProfile : '';
+            
+            const prompt = geminiAI.buildRagPrompt(correctedQuery, context, personalizationProfile);
+            
+            const answer = await geminiAI.generateText(prompt);
+            return {
+                message: answer,
+                metadata: { 
+                    searchType: 'rag', 
+                    sources: this.formatSources(relevantChunks),
+                    source_count: relevantChunks.length // Add source count
+                }
+            };
+        } else {
+            const reason = relevantChunks.length === 0 ? 'No relevant chunks found' : `Top score (${relevantChunks.length > 0 ? relevantChunks[0].score.toFixed(4) : 'N/A'}) is below threshold of ${RAG_CONFIDENCE_THRESHOLD}`;
+            console.log(`[RAG Service] Context insufficient. Reason: ${reason}. Returning fallback message.`);
+            
+            const fallbackMessage = fileId
+                ? "I couldn't find a confident answer for that in the selected document. Please try rephrasing your question with more specific keywords."
+                : "I couldn't find a confident answer for that in your uploaded documents. Please try rephrasing your question or uploading more relevant files.";
+            return {
+                message: fallbackMessage,
+                metadata: { searchType: 'rag_fallback', sources: [] }
+            };
+        }
+    }
+
     async correctAndClarifyQuery(query) {
         const { geminiAI } = serviceManager.getServices();
         try {
@@ -23,61 +144,16 @@ class HybridRagService {
             return query;
         }
     }
-
-    // Modified processQuery to search across all files for the user
-    // Removed fileId parameter
-    async processQuery(query, userId) {
-        const { vectorStore, geminiAI } = serviceManager.getServices();
-
-        const correctedQuery = await this.correctAndClarifyQuery(query);
-
-        // The `vectorStore.searchDocuments` should handle the actual search across indexed data.
-        const relevantChunks = await vectorStore.searchDocuments(correctedQuery, {
-            limit: 5,
-            filters: { userId } // Removed fileId from filters
-        });
-
-        const isContextSufficient = relevantChunks.length > 0 && relevantChunks[0].score > RAG_CONFIDENCE_THRESHOLD;
-
-        if (isContextSufficient) {
-            console.log('[RAG Service] Context sufficient. Answering from document.');
-            const context = relevantChunks.map(chunk => chunk.content).join('\n\n');
-            
-            // --- MODIFICATION: Fetch user profile and use new RAG prompt builder ---
-            const user = await User.findById(userId);
-            const personalizationProfile = user ? user.personalizationProfile : '';
-            // Assuming geminiAI has a `buildRagPrompt` method
-            const prompt = geminiAI.buildRagPrompt(correctedQuery, context, personalizationProfile);
-            
-            const answer = await geminiAI.generateText(prompt);
-            return {
-                message: answer,
-                metadata: { searchType: 'rag', sources: this.formatSources(relevantChunks) }
-            };
-        } else {
-            console.log('[RAG Service] Context insufficient. Returning fallback message.');
-            return {
-                message: "I couldn't find a confident answer for that in your uploaded documents. Please try rephrasing your question or uploading more relevant files.",
-                metadata: { searchType: 'rag_fallback', sources: [] }
-            };
-        }
-    }
     
-    // Moved to GeminiAI service or removed if it's not universally applicable
-    // This method needs to be added to GeminiAI or a new prompt utility
-    // For now, I'm providing a placeholder if GeminiAI doesn't have it.
-    // If you plan to pass personalizationProfile, consider where buildStandardRagPrompt lives
-    // if not in GeminiAI. I've assumed `geminiAI.buildRagPrompt` exists.
-    // If it doesn't, uncomment this and adjust `processQuery` accordingly.
-    /*
-    buildStandardRagPrompt(query, context) {
-        return `You are an expert assistant. Answer the user's question based ONLY on the following context. If the answer is not in the context, say "I could not find an answer in the provided documents." Context: --- ${context} --- Question: "${query}" Answer:`;
-    }
-    */
-
     formatSources(chunks) {
-        const uniqueSources = [...new Set(chunks.map(chunk => chunk.metadata.source))];
-        return uniqueSources.map(source => ({ title: source, type: 'document' }));
+        const uniqueSources = new Map();
+        chunks.forEach(chunk => {
+            const fileName = chunk.metadata.fileName || 'Unknown Document';
+            if (!uniqueSources.has(fileName)) {
+                uniqueSources.set(fileName, { title: fileName, type: 'document' });
+            }
+        });
+        return Array.from(uniqueSources.values());
     }
 }
 

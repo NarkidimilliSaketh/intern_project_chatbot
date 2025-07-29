@@ -1,3 +1,4 @@
+// client/src/components/FileManagerWidget/index.js
 import React, { useState } from 'react';
 import { Popover } from 'react-tiny-popover';
 import { FaTrash, FaEdit, FaFileAudio, FaProjectDiagram, FaEllipsisV, FaCommentDots } from 'react-icons/fa';
@@ -13,11 +14,10 @@ function FileManagerWidget({
     onGenerateMindMap,
     onChatWithFile,
     isProcessing,
-    onActionTaken // New prop to notify parent of an action
+    onActionTaken
 }) {
     const [openMenuId, setOpenMenuId] = useState(null);
 
-    // This function now wraps all actions to ensure the sidebar can be closed
     const handleActionClick = (action, fileId, fileName) => {
         setOpenMenuId(null);
         action(fileId, fileName);
@@ -50,9 +50,9 @@ function FileManagerWidget({
                                 containerStyle={{ zIndex: 1100 }}
                                 content={
                                     <div className="popover-menu">
-                                        {/* This button will now enable general RAG mode */}
+                                        {/* --- MODIFICATION: Changed button text for clarity --- */}
                                         <button onClick={() => handleActionClick(onChatWithFile, file._id, file.originalname)} disabled={isProcessing} className="popover-menu-item">
-                                            <FaCommentDots /> Chat with your Files
+                                            <FaCommentDots /> Chat with this File
                                         </button>
                                         <div className="popover-divider" />
                                         <button onClick={() => handleActionClick(onGeneratePodcast, file._id, file.originalname)} disabled={isProcessing} className="popover-menu-item">
